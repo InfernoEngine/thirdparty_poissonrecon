@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8" standalone="no" ?>
+<Module>
+	
+	<GlobalSolutionName>ThirdParty</GlobalSolutionName>
+	<GlobalNamespace>potato</GlobalNamespace>
+
+	<SharedLibrary>
+		<Name>thirdparty_poissonrecon</Name>
+		<SourceRoot>src</SourceRoot>
+		<ExportedIncludeDirectory>include</ExportedIncludeDirectory>
+		<LocalIncludeDirectory>include</LocalIncludeDirectory>
+		<ThirdParty>true</ThirdParty>
+		<ThirdPartySourceFile>
+			PoissonRecon.cpp
+
+			#AdaptiveTreeVisualization.cpp
+			#ChunkPLY.cpp
+			#EDTInHeat.cpp
+			#ImageStitching.cpp
+			#PointInterpolant.cpp
+			#SSDRecon.cpp
+			#SurfaceTrimmer.cpp			
+			#PoissonReconClient.cpp
+			#PoissonReconServer.cpp
+			#Reconstruction.example.cpp
+		</ThirdPartySourceFile>
+		<Dependency>thirdparty_libpng</Dependency>
+		<Dependency>thirdparty_libjpeg</Dependency>
+	</SharedLibrary>
+
+</Module>

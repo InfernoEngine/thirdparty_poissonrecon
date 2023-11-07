@@ -502,7 +502,7 @@ void Execute( const AuxDataFactory &auxDataFactory )
 			char tempPath[1024];
 			tempPath[0] = 0;
 			if( TempDir.set ) strcpy( tempPath , TempDir.value );
-			else SetTempDirectory( tempPath , sizeof(tempPath) );
+			else SetTempDirectoryX( tempPath , sizeof(tempPath) );
 			if( strlen(tempPath)==0 ) sprintf( tempPath , ".%c" , FileSeparator );
 			if( tempPath[ strlen( tempPath )-1 ]==FileSeparator ) sprintf( tempHeader , "%sPR_" , tempPath );
 			else                                                  sprintf( tempHeader , "%s%cPR_" , tempPath , FileSeparator );

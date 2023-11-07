@@ -1,4 +1,4 @@
-/*
+	/*
 Copyright (c) 2006, Michael Kazhdan and Matthew Bolitho
 All rights reserved.
 
@@ -27,7 +27,15 @@ DAMAGE.
 */
 
 #include "PreProcessor.h"
+
+#define USE_DOUBLE								// If enabled, double-precesion is used
+#define WEIGHT_DEGREE 2							// The order of the B-Spline used to splat in the weights for density estimation
+#define DEFAULT_FEM_DEGREE 2					// The default finite-element degree
+#define DEFAULT_FEM_BOUNDARY BOUNDARY_FREE		// The default finite-element boundary type
+#define DEFAULT_DIMENSION 2						// The dimension of the system
+
 #include "Reconstructors.h"
+#include "PoissonRecon.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +53,7 @@ DAMAGE.
 
 #define DEFAULT_DIMENSION 3
 
+#if 0 // Inferno
 cmdLineParameter< char* >
 	In( "in" ) ,
 	Out( "out" ) ,
@@ -195,515 +204,567 @@ void ShowUsage(char* ex)
 	printf( "\t[--%s]\n" , InCore.name );
 	printf( "\t[--%s]\n" , Verbose.name );
 }
+#endif
 
-template< typename Real , unsigned int Dim , unsigned int FEMSig , bool HasGradients , bool HasDensity >
-void WriteMesh
-(
-	bool inCore ,
-	Reconstructor::Implicit< Real , Dim , FEMSig > &implicit ,
-	const Reconstructor::LevelSetExtractionParameters &meParams ,
-	std::string fileName ,
-	bool ascii
-)
+struct PossionReconWrapper
 {
-	// A description of the output vertex information
-	using VInfo = Reconstructor::OutputVertexInfo< Real , Dim , HasGradients , HasDensity >;
+	PoissonParams CommandLine;
+	const PoissonInputStream* InputStream = nullptr;
+	PoissonOutputStream* OutputStream = nullptr;
 
-	// A factory generating the output vertices
-	using Factory = typename VInfo::Factory;
-	Factory factory = VInfo::GetFactory();
-
-	// A backing stream for the vertices
-	Reconstructor::OutputInputFactoryTypeStream< Factory > vertexStream( factory , inCore , false , std::string( "v_" ) );
-	Reconstructor::OutputInputPolygonStream polygonStream( inCore , true , std::string( "p_" ) );
-
+	template< typename Real, unsigned int Dim, unsigned int FEMSig, bool HasGradients, bool HasDensity >
+	void WriteMesh
+	(
+		bool inCore,
+		Reconstructor::Implicit< Real, Dim, FEMSig >& implicit,
+		const Reconstructor::LevelSetExtractionParameters& meParams,
+		std::string fileName,
+		bool ascii
+	)
 	{
-		// The wrapper converting native to output types
-		typename VInfo::StreamWrapper _vertexStream( vertexStream , factory() );
+		// A description of the output vertex information
+		using VInfo = Reconstructor::OutputVertexInfo< Real, Dim, HasGradients, HasDensity >;
 
-		// Extract the level set
-		implicit.extractLevelSet( _vertexStream , polygonStream , meParams );
-	}
+		// A factory generating the output vertices
+		using Factory = typename VInfo::Factory;
+		Factory factory = VInfo::GetFactory();
 
-	// Write the mesh to a .ply file
-	std::vector< std::string > noComments;
-	PLY::WritePolygons< Factory , node_index_type , Real , Dim >( fileName , factory , vertexStream.size() , polygonStream.size() , vertexStream , polygonStream , ascii ? PLY_ASCII : PLY_BINARY_NATIVE , noComments );
-}
+		// A backing stream for the vertices
+		Reconstructor::OutputInputFactoryTypeStream< Factory > vertexStream(factory, inCore, false, std::string("v_"));
+		Reconstructor::OutputInputPolygonStream polygonStream(inCore, true, std::string("p_"));
 
-template< typename Real , unsigned int Dim , unsigned int FEMSig , typename AuxDataFactory , bool HasGradients , bool HasDensity >
-void WriteMeshWithData
-(
-	const AuxDataFactory &auxDataFactory ,
-	bool inCore ,
-	Reconstructor::Implicit< Real , Dim , FEMSig , typename AuxDataFactory::VertexType > &implicit ,
-	const Reconstructor::LevelSetExtractionParameters &meParams ,
-	std::string fileName ,
-	bool ascii
-)
-{
-	// A description of the output vertex information
-	using VInfo = Reconstructor::OutputVertexWithDataInfo< Real , Dim , AuxDataFactory , HasGradients , HasDensity >;
-
-	// A factory generating the output vertices
-	using Factory = typename VInfo::Factory;
-	Factory factory = VInfo::GetFactory( auxDataFactory );
-
-	// A backing stream for the vertices
-	Reconstructor::OutputInputFactoryTypeStream< Factory > vertexStream( factory , inCore , false , std::string( "v_" ) );
-	Reconstructor::OutputInputPolygonStream polygonStream( inCore , true , std::string( "p_" ) );
-
-	{
-		// The wrapper converting native to output types
-		typename VInfo::StreamWrapper _vertexStream( vertexStream , factory() );
-
-		// Extract the level set
-		implicit.extractLevelSet( _vertexStream , polygonStream , meParams );
-	}
-
-	// Write the mesh to a .ply file
-	std::vector< std::string > noComments;
-	PLY::WritePolygons< Factory , node_index_type , Real , Dim >( fileName , factory , vertexStream.size() , polygonStream.size() , vertexStream , polygonStream , ascii ? PLY_ASCII : PLY_BINARY_NATIVE , noComments );
-}
-
-template< class Real , unsigned int Dim , unsigned int FEMSig , typename AuxDataFactory >
-void Execute( const AuxDataFactory &auxDataFactory )
-{
-	static const bool HasAuxData = !std::is_same< AuxDataFactory , VertexFactory::EmptyFactory< Real > >::value;
-
-	///////////////
-	// Types --> //
-	typedef IsotropicUIntPack< Dim , FEMSig > Sigs;
-	using namespace VertexFactory;
-
-	// The factory for constructing an input sample's data
-	typedef typename std::conditional< HasAuxData , Factory< Real , NormalFactory< Real , Dim > , AuxDataFactory > , NormalFactory< Real , Dim > >::type InputSampleDataFactory;
-
-	// The factory for constructing an input sample
-	typedef Factory< Real , PositionFactory< Real , Dim > , InputSampleDataFactory >  InputSampleFactory;
-
-	typedef InputDataStream< typename InputSampleFactory::VertexType > InputPointStream;
-
-	// The type storing the reconstruction solution (depending on whether auxiliary data is provided or not)
-	using Implicit = typename std::conditional< HasAuxData , Reconstructor::Poisson::Implicit< Real , Dim , FEMSig , typename AuxDataFactory::VertexType > , Reconstructor::Poisson::Implicit< Real , Dim , FEMSig > >::type;
-	// <-- Types //
-	///////////////
-
-	if( Verbose.set )
-	{
-		std::cout << "*************************************************************" << std::endl;
-		std::cout << "*************************************************************" << std::endl;
-		std::cout << "** Running Screened Poisson Reconstruction (Version " << ADAPTIVE_SOLVERS_VERSION << ") **" << std::endl;
-		std::cout << "*************************************************************" << std::endl;
-		std::cout << "*************************************************************" << std::endl;
-		if( !Threads.set ) std::cout << "Running with " << Threads.value << " threads" << std::endl;
-
-		char str[1024];
-		for( int i=0 ; params[i] ; i++ ) if( params[i]->set )
 		{
-			params[i]->writeValue( str );
-			if( strlen( str ) ) std::cout << "\t--" << params[i]->name << " " << str << std::endl;
-			else                std::cout << "\t--" << params[i]->name << std::endl;
+			// The wrapper converting native to output types
+			typename VInfo::StreamWrapper _vertexStream(vertexStream, factory());
+
+			// Extract the level set
+			implicit.extractLevelSet(_vertexStream, polygonStream, meParams);
 		}
+
+		// Write the mesh to a .ply file
+		std::vector< std::string > noComments;
+		PLY::WritePolygons< Factory, node_index_type, Real, Dim >(fileName, factory, vertexStream.size(), polygonStream.size(), vertexStream, polygonStream, ascii ? PLY_ASCII : PLY_BINARY_NATIVE, noComments);
 	}
 
-	Profiler profiler(20);
-	Implicit *implicit = NULL;
-	typename Reconstructor::Poisson::SolutionParameters< Real > sParams;
-	Reconstructor::LevelSetExtractionParameters meParams;
-
-	sParams.verbose = Verbose.set;
-	sParams.dirichletErode = !NoDirichletErode.set;
-	sParams.outputDensity = Density.set;
-	sParams.exactInterpolation = ExactInterpolation.set;
-	sParams.showResidual = ShowResidual.set;
-	sParams.scale = (Real)Scale.value;
-	sParams.confidence = (Real)Confidence.value;
-	sParams.confidenceBias = (Real)ConfidenceBias.value;
-	sParams.lowDepthCutOff = (Real)LowDepthCutOff.value;
-	sParams.width = (Real)Width.value;
-	sParams.pointWeight = (Real)PointWeight.value;
-	sParams.samplesPerNode = (Real)SamplesPerNode.value;
-	sParams.cgSolverAccuracy = (Real)CGSolverAccuracy.value;
-	sParams.depth = (unsigned int)Depth.value;
-	sParams.baseDepth = (unsigned int)BaseDepth.value;
-	sParams.solveDepth = (unsigned int)SolveDepth.value;
-	sParams.fullDepth = (unsigned int)FullDepth.value;
-	sParams.kernelDepth = (unsigned int)KernelDepth.value;
-	sParams.envelopeDepth = (unsigned int)EnvelopeDepth.value;
-	sParams.baseVCycles = (unsigned int)BaseVCycles.value;
-	sParams.iters = (unsigned int)Iters.value;
-
-	meParams.linearFit = LinearFit.set;
-	meParams.outputGradients = Gradients.set;
-	meParams.forceManifold = !NonManifold.set;
-	meParams.polygonMesh = PolygonMesh.set;
-	meParams.verbose = Verbose.set;
-
-	double startTime = Time();
-
-	InputSampleFactory *_inputSampleFactory;
-	if constexpr( HasAuxData ) _inputSampleFactory = new InputSampleFactory( VertexFactory::PositionFactory< Real , Dim >() , InputSampleDataFactory( VertexFactory::NormalFactory< Real , Dim >() , auxDataFactory ) );
-	else _inputSampleFactory = new InputSampleFactory( VertexFactory::PositionFactory< Real , Dim >() , VertexFactory::NormalFactory< Real , Dim >() );
-	InputSampleFactory &inputSampleFactory = *_inputSampleFactory;
-	XForm< Real , Dim+1 > toModel = XForm< Real , Dim+1 >::Identity();
-
-	// Read in the transform, if we want to apply one to the points before processing
-	if( Transform.set )
+	template< typename Real, unsigned int Dim, unsigned int FEMSig, typename AuxDataFactory, bool HasGradients, bool HasDensity >
+	void WriteMeshWithData
+	(
+		const AuxDataFactory& auxDataFactory,
+		bool inCore,
+		Reconstructor::Implicit< Real, Dim, FEMSig, typename AuxDataFactory::VertexType >& implicit,
+		const Reconstructor::LevelSetExtractionParameters& meParams,
+		std::string fileName,
+		bool ascii
+	)
 	{
-		FILE* fp = fopen( Transform.value , "r" );
-		if( !fp ) WARN( "Could not read x-form from: " , Transform.value );
-		else
+		// A description of the output vertex information
+		using VInfo = Reconstructor::OutputVertexWithDataInfo< Real, Dim, AuxDataFactory, HasGradients, HasDensity >;
+
+		// A factory generating the output vertices
+		using Factory = typename VInfo::Factory;
+		Factory factory = VInfo::GetFactory(auxDataFactory);
+
+		// A backing stream for the vertices
+		Reconstructor::OutputInputFactoryTypeStream< Factory > vertexStream(factory, inCore, false, std::string("v_"));
+		Reconstructor::OutputInputPolygonStream polygonStream(inCore, true, std::string("p_"));
+
 		{
-			for( int i=0 ; i<Dim+1 ; i++ ) for( int j=0 ; j<Dim+1 ; j++ )
+			// The wrapper converting native to output types
+			typename VInfo::StreamWrapper _vertexStream(vertexStream, factory());
+
+			// Extract the level set
+			implicit.extractLevelSet(_vertexStream, polygonStream, meParams);
+		}
+
+		// Write the mesh to a .ply file
+		std::vector< std::string > noComments;
+		PLY::WritePolygons< Factory, node_index_type, Real, Dim >(fileName, factory, vertexStream.size(), polygonStream.size(), vertexStream, polygonStream, ascii ? PLY_ASCII : PLY_BINARY_NATIVE, noComments);
+	}
+
+	template< class Real, unsigned int Dim, unsigned int FEMSig, typename AuxDataFactory >
+	void Execute(const AuxDataFactory& auxDataFactory)
+	{
+		static const bool HasAuxData = !std::is_same< AuxDataFactory, VertexFactory::EmptyFactory< Real > >::value;
+
+		///////////////
+		// Types --> //
+		typedef IsotropicUIntPack< Dim, FEMSig > Sigs;
+		using namespace VertexFactory;
+
+		// The factory for constructing an input sample's data
+		typedef typename std::conditional< HasAuxData, Factory< Real, NormalFactory< Real, Dim >, AuxDataFactory >, NormalFactory< Real, Dim > >::type InputSampleDataFactory;
+
+		// The factory for constructing an input sample
+		typedef Factory< Real, PositionFactory< Real, Dim >, InputSampleDataFactory >  InputSampleFactory;
+
+		typedef InputDataStream< typename InputSampleFactory::VertexType > InputPointStream;
+
+		// The type storing the reconstruction solution (depending on whether auxiliary data is provided or not)
+		using Implicit = typename std::conditional< HasAuxData, Reconstructor::Poisson::Implicit< Real, Dim, FEMSig, typename AuxDataFactory::VertexType >, Reconstructor::Poisson::Implicit< Real, Dim, FEMSig > >::type;
+		// <-- Types //
+		///////////////
+
+		if (Verbose.set)
+		{
+			std::cout << "*************************************************************" << std::endl;
+			std::cout << "*************************************************************" << std::endl;
+			std::cout << "** Running Screened Poisson Reconstruction (Version " << ADAPTIVE_SOLVERS_VERSION << ") **" << std::endl;
+			std::cout << "*************************************************************" << std::endl;
+			std::cout << "*************************************************************" << std::endl;
+			if (!Threads.set) std::cout << "Running with " << Threads.value << " threads" << std::endl;
+
+			char str[1024];
+			for (int i = 0; params[i]; i++) if (params[i]->set)
 			{
-				float f;
-				if( fscanf( fp , " %f " , &f )!=1 ) ERROR_OUT( "Failed to read xform" );
-				toModel(i,j) = (Real)f;
+				params[i]->writeValue(str);
+				if (strlen(str)) std::cout << "\t--" << params[i]->name << " " << str << std::endl;
+				else                std::cout << "\t--" << params[i]->name << std::endl;
 			}
-			fclose( fp );
-		}
-	}
-	std::vector< typename InputSampleFactory::VertexType > inCorePoints;
-	InputPointStream *pointStream;
-
-	// Get the point stream
-	{
-		profiler.reset();
-		char *ext = GetFileExtension( In.value );
-
-		if( InCore.set )
-		{
-			InputPointStream *_pointStream;
-			if     ( !strcasecmp( ext , "bnpts" ) ) _pointStream = new BinaryInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-			else if( !strcasecmp( ext , "ply"   ) ) _pointStream = new    PLYInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-			else                                    _pointStream = new  ASCIIInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-			typename InputSampleFactory::VertexType p = inputSampleFactory();
-			while( _pointStream->read( p ) ) inCorePoints.push_back( p );
-			delete _pointStream;
-
-			pointStream = new VectorBackedInputDataStream< typename InputSampleFactory::VertexType >( inCorePoints );
-		}
-		else
-		{
-			if     ( !strcasecmp( ext , "bnpts" ) ) pointStream = new BinaryInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-			else if( !strcasecmp( ext , "ply"   ) ) pointStream = new    PLYInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-			else                                    pointStream = new  ASCIIInputDataStream< InputSampleFactory >( In.value , inputSampleFactory );
-		}
-		delete[] ext;
-	}
-
-	typename Reconstructor::Poisson::EnvelopeMesh< Real , Dim > *envelopeMesh = NULL;
-	if( Envelope.set )
-	{
-		envelopeMesh = new typename Reconstructor::Poisson::EnvelopeMesh< Real , Dim >();
-		{
-			std::vector< std::vector< int > > polygons;
-			std::vector< std::string > comments;
-			int file_type;
-			PLY::ReadPolygons( Envelope.value , PositionFactory< Real , Dim >() , envelopeMesh->vertices , polygons , file_type , comments );
-			envelopeMesh->simplices.resize( polygons.size() );
-			for( int i=0 ; i<polygons.size() ; i++ )
-				if( polygons[i].size()!=Dim ) ERROR_OUT( "Not a simplex" );
-				else for( int j=0 ; j<Dim ; j++ ) envelopeMesh->simplices[i][j] = polygons[i][j];
-		}
-	}
-
-	// A wrapper class to realize InputDataStream< SampleType > as an InputSampleStream
-	struct _InputSampleStream : public Reconstructor::InputSampleStream< Real , Dim >
-	{
-		typedef Reconstructor::Normal< Real , Dim > DataType;
-		typedef VectorTypeUnion< Real , Reconstructor::Position< Real , Dim > , DataType > SampleType;
-		typedef InputDataStream< SampleType > _InputPointStream;
-		_InputPointStream &pointStream;
-		SampleType scratch;
-		_InputSampleStream( _InputPointStream &pointStream ) : pointStream( pointStream )
-		{
-			scratch = SampleType( Reconstructor::Position< Real , Dim >() , Reconstructor::Normal< Real , Dim >() );
-		}
-		void reset( void ){ pointStream.reset(); }
-		bool base_read( Reconstructor::Position< Real , Dim > &p , Reconstructor::Normal< Real , Dim > &n ) 
-		{
-			bool ret = pointStream.read( scratch );
-			if( ret ) p = scratch.template get<0>() , n = scratch.template get<1>();
-			return ret;
-		}
-	};
-
-	// A wrapper class to realize InputDataStream< SampleType > as an InputSampleWithDataStream
-	struct _InputSampleWithDataStream : public Reconstructor::InputSampleWithDataStream< Real , Dim , typename AuxDataFactory::VertexType >
-	{
-		typedef VectorTypeUnion< Real , Reconstructor::Normal< Real , Dim > , typename AuxDataFactory::VertexType > DataType;
-		typedef VectorTypeUnion< Real , Reconstructor::Position< Real , Dim > , DataType > SampleType;
-		typedef InputDataStream< SampleType > _InputPointStream;
-		_InputPointStream &pointStream;
-		SampleType scratch;
-		_InputSampleWithDataStream( _InputPointStream &pointStream , typename AuxDataFactory::VertexType zero ) : Reconstructor::InputSampleWithDataStream< Real , Dim , typename AuxDataFactory::VertexType >( zero ) , pointStream( pointStream )
-		{
-			scratch = SampleType( Reconstructor::Position< Real , Dim >() , DataType( Reconstructor::Normal< Real , Dim >() , zero ) );
-		}
-		void reset( void ){ pointStream.reset(); }
-		bool base_read( Reconstructor::Position< Real , Dim > &p , Reconstructor::Normal< Real , Dim > &n , typename AuxDataFactory::VertexType &d ) 
-		{
-			bool ret = pointStream.read( scratch );
-			if( ret ) p = scratch.template get<0>() , n = scratch.template get<1>().template get<0>() , d = scratch.template get<1>().template get<1>();
-			return ret;
-		}
-	};
-
-	if( Transform.set and envelopeMesh ) for( unsigned int i=0 ; i<envelopeMesh->vertices.size() ; i++ ) envelopeMesh->vertices[i] = toModel * envelopeMesh->vertices[i];
-	if constexpr( HasAuxData )
-	{
-		_InputSampleWithDataStream sampleStream( *pointStream , auxDataFactory() );
-
-		if( Transform.set )
-		{
-			Reconstructor::TransformedInputSampleWithDataStream< Real , Dim , typename AuxDataFactory::VertexType > _sampleStream( toModel , sampleStream );
-			implicit = new typename Reconstructor::Poisson::Implicit< Real , Dim , FEMSig , typename AuxDataFactory::VertexType >( _sampleStream , sParams , envelopeMesh );
-			implicit->unitCubeToModel = toModel.inverse() * implicit->unitCubeToModel;
-		}
-		else implicit = new typename Reconstructor::Poisson::Implicit< Real , Dim , FEMSig , typename AuxDataFactory::VertexType >( sampleStream , sParams , envelopeMesh );
-	}
-	else
-	{
-		_InputSampleStream sampleStream( *pointStream );
-
-		if( Transform.set )
-		{
-			Reconstructor::TransformedInputSampleStream< Real , Dim > _sampleStream( toModel , sampleStream );
-			implicit = new typename Reconstructor::Poisson::Implicit< Real , Dim , FEMSig >( _sampleStream , sParams , envelopeMesh );
-			implicit->unitCubeToModel = toModel.inverse() * implicit->unitCubeToModel;
-		}
-		else implicit = new typename Reconstructor::Poisson::Implicit< Real , Dim , FEMSig >( sampleStream , sParams , envelopeMesh );
-	}
-
-	delete pointStream;
-	delete _inputSampleFactory;
-	delete envelopeMesh;
-
-	if constexpr( HasAuxData ) if( implicit->auxData ) implicit->weightAuxDataByDepth( (Real)DataX.value );
-
-	if( Tree.set )
-	{
-		FILE* fp = fopen( Tree.value , "wb" );
-		if( !fp ) ERROR_OUT( "Failed to open file for writing: " , Tree.value );
-		FileStream fs(fp);
-		FEMTree< Dim , Real >::WriteParameter( fs );
-		DenseNodeData< Real , Sigs >::WriteSignatures( fs );
-		implicit->tree.write( fs , implicit->unitCubeToModel.inverse() , false );
-		implicit->solution.write( fs );
-		if constexpr( HasAuxData ) if( implicit->auxData ) implicit->auxData->write( fs );
-		if( implicit->density ) implicit->density->write( fs );
-		fclose( fp );
-	}
-
-	if( Grid.set )
-	{
-		int res = 0;
-		profiler.reset();
-		Pointer( Real ) values = implicit->tree.template regularGridEvaluate< true >( implicit->solution , res , -1 , PrimalGrid.set );
-		if( Verbose.set ) std::cout << "Got grid: " << profiler << std::endl;
-		XForm< Real , Dim+1 > voxelToUnitCube = XForm< Real , Dim+1 >::Identity();
-		if( PrimalGrid.set ) for( int d=0 ; d<Dim ; d++ ) voxelToUnitCube( d , d ) = (Real)( 1. / (res-1) );
-		else                 for( int d=0 ; d<Dim ; d++ ) voxelToUnitCube( d , d ) = (Real)( 1. / res ) , voxelToUnitCube( Dim , d ) = (Real)( 0.5 / res );
-
-		unsigned int _res[Dim];
-		for( int d=0 ; d<Dim ; d++ ) _res[d] = res;
-		RegularGrid< Real , Dim >::Write( Grid.value , _res , values , implicit->unitCubeToModel * voxelToUnitCube );
-
-		DeletePointer( values );
-	}
-
-
-	if( Out.set && Dim!=3 ) WARN( "Mesh extraction is only supported in dimension 3" );
-	else if( Out.set && Dim==3 )
-	{
-		// Create the output mesh
-		char tempHeader[2048];
-		{
-			char tempPath[1024];
-			tempPath[0] = 0;
-			if( TempDir.set ) strcpy( tempPath , TempDir.value );
-			else SetTempDirectory( tempPath , sizeof(tempPath) );
-			if( strlen(tempPath)==0 ) sprintf( tempPath , ".%c" , FileSeparator );
-			if( tempPath[ strlen( tempPath )-1 ]==FileSeparator ) sprintf( tempHeader , "%sPR_" , tempPath );
-			else                                                  sprintf( tempHeader , "%s%cPR_" , tempPath , FileSeparator );
 		}
 
-		XForm< Real , Dim+1 > pXForm = implicit->unitCubeToModel;
-		XForm< Real , Dim > nXForm = XForm< Real , Dim >( pXForm ).inverse().transpose();
+		Profiler profiler(20);
+		Implicit* implicit = NULL;
+		typename Reconstructor::Poisson::SolutionParameters< Real > sParams;
+		Reconstructor::LevelSetExtractionParameters meParams;
 
-		if( Gradients.set )
+		sParams.verbose = Verbose.set;
+		sParams.dirichletErode = !NoDirichletErode.set;
+		sParams.outputDensity = Density.set;
+		sParams.exactInterpolation = ExactInterpolation.set;
+		sParams.showResidual = ShowResidual.set;
+		sParams.scale = (Real)Scale.value;
+		sParams.confidence = (Real)Confidence.value;
+		sParams.confidenceBias = (Real)ConfidenceBias.value;
+		sParams.lowDepthCutOff = (Real)LowDepthCutOff.value;
+		sParams.width = (Real)Width.value;
+		sParams.pointWeight = (Real)PointWeight.value;
+		sParams.samplesPerNode = (Real)SamplesPerNode.value;
+		sParams.cgSolverAccuracy = (Real)CGSolverAccuracy.value;
+		sParams.depth = (unsigned int)Depth.value;
+		sParams.baseDepth = (unsigned int)BaseDepth.value;
+		sParams.solveDepth = (unsigned int)SolveDepth.value;
+		sParams.fullDepth = (unsigned int)FullDepth.value;
+		sParams.kernelDepth = (unsigned int)KernelDepth.value;
+		sParams.envelopeDepth = (unsigned int)EnvelopeDepth.value;
+		sParams.baseVCycles = (unsigned int)BaseVCycles.value;
+		sParams.iters = (unsigned int)Iters.value;
+
+		meParams.linearFit = LinearFit.set;
+		meParams.outputGradients = Gradients.set;
+		meParams.forceManifold = !NonManifold.set;
+		meParams.polygonMesh = PolygonMesh.set;
+		meParams.verbose = Verbose.set;
+
+		double startTime = Time();
+
+		InputSampleFactory* _inputSampleFactory;
+		if constexpr (HasAuxData) _inputSampleFactory = new InputSampleFactory(VertexFactory::PositionFactory< Real, Dim >(), InputSampleDataFactory(VertexFactory::NormalFactory< Real, Dim >(), auxDataFactory));
+		else _inputSampleFactory = new InputSampleFactory(VertexFactory::PositionFactory< Real, Dim >(), VertexFactory::NormalFactory< Real, Dim >());
+		InputSampleFactory& inputSampleFactory = *_inputSampleFactory;
+		XForm< Real, Dim + 1 > toModel = XForm< Real, Dim + 1 >::Identity();
+
+		// Read in the transform, if we want to apply one to the points before processing
+		if (Transform.set)
 		{
-			if( Density.set )
+			FILE* fp = fopen(Transform.value, "r");
+			if (!fp) WARN("Could not read x-form from: ", Transform.value);
+			else
 			{
-				if constexpr( HasAuxData ) WriteMeshWithData< Real , Dim , FEMSig , AuxDataFactory , true , true >( auxDataFactory , InCore.set , *implicit , meParams , Out.value , ASCII.set );
-				else                       WriteMesh        < Real , Dim , FEMSig ,                  true , true >(                  InCore.set , *implicit , meParams , Out.value , ASCII.set );
+				for (int i = 0; i < Dim + 1; i++) for (int j = 0; j < Dim + 1; j++)
+				{
+					float f;
+					if (fscanf(fp, " %f ", &f) != 1) ERROR_OUT("Failed to read xform");
+					toModel(i, j) = (Real)f;
+				}
+				fclose(fp);
+			}
+		}
+		std::vector< typename InputSampleFactory::VertexType > inCorePoints;
+		InputPointStream* pointStream;
+
+		// Get the point stream
+		{
+			profiler.reset();
+			char* ext = GetFileExtension(In.value);
+
+			if (InCore.set)
+			{
+				InputPointStream* _pointStream;
+				if (!strcasecmp(ext, "bnpts")) _pointStream = new BinaryInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
+				else if (!strcasecmp(ext, "ply")) _pointStream = new    PLYInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
+				else                                    _pointStream = new  ASCIIInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
+				typename InputSampleFactory::VertexType p = inputSampleFactory();
+				while (_pointStream->read(p)) inCorePoints.push_back(p);
+				delete _pointStream;
+
+				pointStream = new VectorBackedInputDataStream< typename InputSampleFactory::VertexType >(inCorePoints);
 			}
 			else
 			{
-				if constexpr( HasAuxData ) WriteMeshWithData< Real , Dim , FEMSig , AuxDataFactory , true , false >( auxDataFactory , InCore.set , *implicit , meParams , Out.value , ASCII.set );
-				else                       WriteMesh        < Real , Dim , FEMSig ,                  true , false >(                  InCore.set , *implicit , meParams , Out.value , ASCII.set );
+				if (!strcasecmp(ext, "bnpts")) pointStream = new BinaryInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
+				else if (!strcasecmp(ext, "ply")) pointStream = new    PLYInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
+				else                                    pointStream = new  ASCIIInputDataStream< InputSampleFactory >(In.value, inputSampleFactory);
 			}
+			delete[] ext;
+		}
+
+		typename Reconstructor::Poisson::EnvelopeMesh< Real, Dim >* envelopeMesh = NULL;
+		if (Envelope.set)
+		{
+			envelopeMesh = new typename Reconstructor::Poisson::EnvelopeMesh< Real, Dim >();
+			{
+				std::vector< std::vector< int > > polygons;
+				std::vector< std::string > comments;
+				int file_type;
+				PLY::ReadPolygons(Envelope.value, PositionFactory< Real, Dim >(), envelopeMesh->vertices, polygons, file_type, comments);
+				envelopeMesh->simplices.resize(polygons.size());
+				for (int i = 0; i < polygons.size(); i++)
+					if (polygons[i].size() != Dim) ERROR_OUT("Not a simplex");
+					else for (int j = 0; j < Dim; j++) envelopeMesh->simplices[i][j] = polygons[i][j];
+			}
+		}
+
+		// A wrapper class to realize InputDataStream< SampleType > as an InputSampleStream
+		struct _InputSampleStream : public Reconstructor::InputSampleStream< Real, Dim >
+		{
+			typedef Reconstructor::Normal< Real, Dim > DataType;
+			typedef VectorTypeUnion< Real, Reconstructor::Position< Real, Dim >, DataType > SampleType;
+			typedef InputDataStream< SampleType > _InputPointStream;
+			_InputPointStream& pointStream;
+			SampleType scratch;
+			_InputSampleStream(_InputPointStream& pointStream) : pointStream(pointStream)
+			{
+				scratch = SampleType(Reconstructor::Position< Real, Dim >(), Reconstructor::Normal< Real, Dim >());
+			}
+			void reset(void) { pointStream.reset(); }
+			bool base_read(Reconstructor::Position< Real, Dim >& p, Reconstructor::Normal< Real, Dim >& n)
+			{
+				bool ret = pointStream.read(scratch);
+				if (ret) p = scratch.template get<0>(), n = scratch.template get<1>();
+				return ret;
+			}
+		};
+
+		// A wrapper class to realize InputDataStream< SampleType > as an InputSampleWithDataStream
+		struct _InputSampleWithDataStream : public Reconstructor::InputSampleWithDataStream< Real, Dim, typename AuxDataFactory::VertexType >
+		{
+			typedef VectorTypeUnion< Real, Reconstructor::Normal< Real, Dim >, typename AuxDataFactory::VertexType > DataType;
+			typedef VectorTypeUnion< Real, Reconstructor::Position< Real, Dim >, DataType > SampleType;
+			typedef InputDataStream< SampleType > _InputPointStream;
+			_InputPointStream& pointStream;
+			SampleType scratch;
+			_InputSampleWithDataStream(_InputPointStream& pointStream, typename AuxDataFactory::VertexType zero) : Reconstructor::InputSampleWithDataStream< Real, Dim, typename AuxDataFactory::VertexType >(zero), pointStream(pointStream)
+			{
+				scratch = SampleType(Reconstructor::Position< Real, Dim >(), DataType(Reconstructor::Normal< Real, Dim >(), zero));
+			}
+			void reset(void) { pointStream.reset(); }
+			bool base_read(Reconstructor::Position< Real, Dim >& p, Reconstructor::Normal< Real, Dim >& n, typename AuxDataFactory::VertexType& d)
+			{
+				bool ret = pointStream.read(scratch);
+				if (ret) p = scratch.template get<0>(), n = scratch.template get<1>().template get<0>(), d = scratch.template get<1>().template get<1>();
+				return ret;
+			}
+		};
+
+		if (Transform.set && envelopeMesh) for (unsigned int i = 0; i < envelopeMesh->vertices.size(); i++) envelopeMesh->vertices[i] = toModel * envelopeMesh->vertices[i];
+		if constexpr (HasAuxData)
+		{
+			_InputSampleWithDataStream sampleStream(*pointStream, auxDataFactory());
+
+			if (Transform.set)
+			{
+				Reconstructor::TransformedInputSampleWithDataStream< Real, Dim, typename AuxDataFactory::VertexType > _sampleStream(toModel, sampleStream);
+				implicit = new typename Reconstructor::Poisson::Implicit< Real, Dim, FEMSig, typename AuxDataFactory::VertexType >(_sampleStream, sParams, envelopeMesh);
+				implicit->unitCubeToModel = toModel.inverse() * implicit->unitCubeToModel;
+			}
+			else implicit = new typename Reconstructor::Poisson::Implicit< Real, Dim, FEMSig, typename AuxDataFactory::VertexType >(sampleStream, sParams, envelopeMesh);
 		}
 		else
 		{
-			if( Density.set )
+			_InputSampleStream sampleStream(*pointStream);
+
+			if (Transform.set)
 			{
-				if constexpr( HasAuxData ) WriteMeshWithData< Real , Dim , FEMSig , AuxDataFactory , false , true >( auxDataFactory , InCore.set , *implicit , meParams , Out.value , ASCII.set );
-				else                       WriteMesh        < Real , Dim , FEMSig ,                  false , true >(                  InCore.set , *implicit , meParams , Out.value , ASCII.set );
+				Reconstructor::TransformedInputSampleStream< Real, Dim > _sampleStream(toModel, sampleStream);
+				implicit = new typename Reconstructor::Poisson::Implicit< Real, Dim, FEMSig >(_sampleStream, sParams, envelopeMesh);
+				implicit->unitCubeToModel = toModel.inverse() * implicit->unitCubeToModel;
+			}
+			else implicit = new typename Reconstructor::Poisson::Implicit< Real, Dim, FEMSig >(sampleStream, sParams, envelopeMesh);
+		}
+
+		delete pointStream;
+		delete _inputSampleFactory;
+		delete envelopeMesh;
+
+		if constexpr (HasAuxData) if (implicit->auxData) implicit->weightAuxDataByDepth((Real)DataX.value);
+
+		if (Tree.set)
+		{
+			FILE* fp = fopen(Tree.value, "wb");
+			if (!fp) ERROR_OUT("Failed to open file for writing: ", Tree.value);
+			FileStream fs(fp);
+			FEMTree< Dim, Real >::WriteParameter(fs);
+			DenseNodeData< Real, Sigs >::WriteSignatures(fs);
+			implicit->tree.write(fs, implicit->unitCubeToModel.inverse(), false);
+			implicit->solution.write(fs);
+			if constexpr (HasAuxData) if (implicit->auxData) implicit->auxData->write(fs);
+			if (implicit->density) implicit->density->write(fs);
+			fclose(fp);
+		}
+
+		if (Grid.set)
+		{
+			int res = 0;
+			profiler.reset();
+			Pointer(Real) values = implicit->tree.template regularGridEvaluate< true >(implicit->solution, res, -1, PrimalGrid.set);
+			if (Verbose.set) std::cout << "Got grid: " << profiler << std::endl;
+			XForm< Real, Dim + 1 > voxelToUnitCube = XForm< Real, Dim + 1 >::Identity();
+			if (PrimalGrid.set) for (int d = 0; d < Dim; d++) voxelToUnitCube(d, d) = (Real)(1. / (res - 1));
+			else                 for (int d = 0; d < Dim; d++) voxelToUnitCube(d, d) = (Real)(1. / res), voxelToUnitCube(Dim, d) = (Real)(0.5 / res);
+
+			unsigned int _res[Dim];
+			for (int d = 0; d < Dim; d++) _res[d] = res;
+			RegularGrid< Real, Dim >::Write(Grid.value, _res, values, implicit->unitCubeToModel * voxelToUnitCube);
+
+			DeletePointer(values);
+		}
+
+
+		if (Out.set && Dim != 3) WARN("Mesh extraction is only supported in dimension 3");
+		else if (Out.set && Dim == 3)
+		{
+			// Create the output mesh
+			char tempHeader[2048];
+			{
+				char tempPath[1024];
+				tempPath[0] = 0;
+				if (TempDir.set) strcpy(tempPath, TempDir.value);
+				else SetTempDirectoryX(tempPath, sizeof(tempPath));
+				if (strlen(tempPath) == 0) sprintf(tempPath, ".%c", FileSeparator);
+				if (tempPath[strlen(tempPath) - 1] == FileSeparator) sprintf(tempHeader, "%sPR_", tempPath);
+				else                                                  sprintf(tempHeader, "%s%cPR_", tempPath, FileSeparator);
+			}
+
+			XForm< Real, Dim + 1 > pXForm = implicit->unitCubeToModel;
+			XForm< Real, Dim > nXForm = XForm< Real, Dim >(pXForm).inverse().transpose();
+
+			if (Gradients.set)
+			{
+				if (Density.set)
+				{
+					if constexpr (HasAuxData) WriteMeshWithData< Real, Dim, FEMSig, AuxDataFactory, true, true >(auxDataFactory, InCore.set, *implicit, meParams, Out.value, ASCII.set);
+					else                       WriteMesh        < Real, Dim, FEMSig, true, true >(InCore.set, *implicit, meParams, Out.value, ASCII.set);
+				}
+				else
+				{
+					if constexpr (HasAuxData) WriteMeshWithData< Real, Dim, FEMSig, AuxDataFactory, true, false >(auxDataFactory, InCore.set, *implicit, meParams, Out.value, ASCII.set);
+					else                       WriteMesh        < Real, Dim, FEMSig, true, false >(InCore.set, *implicit, meParams, Out.value, ASCII.set);
+				}
 			}
 			else
 			{
-				if constexpr( HasAuxData ) WriteMeshWithData< Real , Dim , FEMSig , AuxDataFactory , false , false >( auxDataFactory , InCore.set , *implicit , meParams , Out.value , ASCII.set );
-				else                       WriteMesh        < Real , Dim , FEMSig ,                  false , false >(                  InCore.set , *implicit , meParams , Out.value , ASCII.set );
+				if (Density.set)
+				{
+					if constexpr (HasAuxData) WriteMeshWithData< Real, Dim, FEMSig, AuxDataFactory, false, true >(auxDataFactory, InCore.set, *implicit, meParams, Out.value, ASCII.set);
+					else                       WriteMesh        < Real, Dim, FEMSig, false, true >(InCore.set, *implicit, meParams, Out.value, ASCII.set);
+				}
+				else
+				{
+					if constexpr (HasAuxData) WriteMeshWithData< Real, Dim, FEMSig, AuxDataFactory, false, false >(auxDataFactory, InCore.set, *implicit, meParams, Out.value, ASCII.set);
+					else                       WriteMesh        < Real, Dim, FEMSig, false, false >(InCore.set, *implicit, meParams, Out.value, ASCII.set);
+				}
 			}
 		}
+		if (Verbose.set) std::cout << "#          Total Solve: " << Time() - startTime << " (s), " << MemoryInfo::PeakMemoryUsageMB() << " (MB)" << std::endl;
+		delete implicit;
 	}
-	if( Verbose.set ) std::cout << "#          Total Solve: " << Time()-startTime << " (s), " << MemoryInfo::PeakMemoryUsageMB() << " (MB)" << std::endl;
-	delete implicit;
-}
 
 #ifndef FAST_COMPILE
-template< unsigned int Dim , class Real , BoundaryType BType , typename AuxDataFactory >
-void Execute( const AuxDataFactory &auxDataFactory )
-{
-	switch( Degree.value )
+	template< unsigned int Dim, class Real, BoundaryType BType, typename AuxDataFactory >
+	void Execute(const AuxDataFactory& auxDataFactory)
 	{
-		case 1: return Execute< Real , Dim , FEMDegreeAndBType< 1 , BType >::Signature >( auxDataFactory );
-		case 2: return Execute< Real , Dim , FEMDegreeAndBType< 2 , BType >::Signature >( auxDataFactory );
-//		case 3: return Execute< Real , Dim , FEMDegreeAndBType< 3 , BType >::Signature >( auxDataFactory );
-//		case 4: return Execute< Real , Dim , FEMDegreeAndBType< 4 , BType >::Signature >( auxDataFactory );
-		default: ERROR_OUT( "Only B-Splines of degree 1 - 2 are supported" );
+		switch (Degree.value)
+		{
+		case 1: return Execute< Real, Dim, FEMDegreeAndBType< 1, BType >::Signature >(auxDataFactory);
+		case 2: return Execute< Real, Dim, FEMDegreeAndBType< 2, BType >::Signature >(auxDataFactory);
+			//		case 3: return Execute< Real , Dim , FEMDegreeAndBType< 3 , BType >::Signature >( auxDataFactory );
+			//		case 4: return Execute< Real , Dim , FEMDegreeAndBType< 4 , BType >::Signature >( auxDataFactory );
+		default: ERROR_OUT("Only B-Splines of degree 1 - 2 are supported");
+		}
 	}
-}
 
-template< unsigned int Dim , class Real , typename AuxDataFactory >
-void Execute( const AuxDataFactory &auxDataFactory )
-{
-	switch( BType.value )
+	template< unsigned int Dim, class Real, typename AuxDataFactory >
+	void Execute(const AuxDataFactory& auxDataFactory)
 	{
-		case BOUNDARY_FREE+1:      return Execute< Dim , Real , BOUNDARY_FREE      >( auxDataFactory );
-		case BOUNDARY_NEUMANN+1:   return Execute< Dim , Real , BOUNDARY_NEUMANN   >( auxDataFactory );
-		case BOUNDARY_DIRICHLET+1: return Execute< Dim , Real , BOUNDARY_DIRICHLET >( auxDataFactory );
-		default: ERROR_OUT( "Not a valid boundary type: " , BType.value );
+		switch (BType.value)
+		{
+		case BOUNDARY_FREE + 1:      return Execute< Dim, Real, BOUNDARY_FREE      >(auxDataFactory);
+		case BOUNDARY_NEUMANN + 1:   return Execute< Dim, Real, BOUNDARY_NEUMANN   >(auxDataFactory);
+		case BOUNDARY_DIRICHLET + 1: return Execute< Dim, Real, BOUNDARY_DIRICHLET >(auxDataFactory);
+		default: ERROR_OUT("Not a valid boundary type: ", BType.value);
+		}
 	}
-}
 #endif // !FAST_COMPILE
 
-int main( int argc , char* argv[] )
-{
-	Timer timer;
+#if 1 // INFERNO
+	int main()
+	{
+		Timer timer;
 #ifdef ARRAY_DEBUG
-	WARN( "Array debugging enabled" );
+		WARN("Array debugging enabled");
 #endif // ARRAY_DEBUG
-	cmdLineParse( argc-1 , &argv[1] , params );
-	if( MaxMemoryGB.value>0 ) SetPeakMemoryMB( MaxMemoryGB.value<<10 );
-	ThreadPool::DefaultChunkSize = ThreadChunkSize.value;
-	ThreadPool::DefaultSchedule = (ThreadPool::ScheduleType)ScheduleType.value;
-	ThreadPool::Init( (ThreadPool::ParallelType)ParallelType.value , Threads.value );
+		//cmdLineParse(argc - 1, &argv[1], params);
+		if (CommandLine.MaxMemoryGB.value > 0) SetPeakMemoryMB(CommandLine.MaxMemoryGB.value << 10);
+		ThreadPool::DefaultChunkSize = CommandLine.ThreadChunkSize.value;
+		ThreadPool::DefaultSchedule = (ThreadPool::ScheduleType)CommandLine.ScheduleType.value;
+		ThreadPool::Init((ThreadPool::ParallelType)CommandLine.ParallelType.value, CommandLine.Threads.value);
 
-	if( !In.set )
-	{
-		ShowUsage( argv[0] );
-		return 0;
-	}
+		if (!CommandLine.BaseDepth.set) CommandLine.BaseDepth.value = CommandLine.FullDepth.value;
+		if (!CommandLine.SolveDepth.set) CommandLine.SolveDepth.value = CommandLine.Depth.value;
 
-	if( !BaseDepth.set ) BaseDepth.value = FullDepth.value;
-	if( !SolveDepth.set ) SolveDepth.value = Depth.value;
+		if (CommandLine.BaseDepth.value > CommandLine.FullDepth.value)
+		{
+			if (CommandLine.BaseDepth.set) WARN("Base depth must be smaller than full depth: ", CommandLine.BaseDepth.value, " <= ", CommandLine.FullDepth.value);
+			CommandLine.BaseDepth.value = CommandLine.FullDepth.value;
+		}
+		if (CommandLine.SolveDepth.value > CommandLine.Depth.value)
+		{
+			WARN("Solution depth cannot exceed system depth: ", CommandLine.SolveDepth.value, " <= ", CommandLine.Depth.value);
+			CommandLine.SolveDepth.value = CommandLine.Depth.value;
+		}
+		if (!CommandLine.KernelDepth.set) CommandLine.KernelDepth.value = CommandLine.Depth.value - 2;
+		if (CommandLine.KernelDepth.value > CommandLine.Depth.value)
+		{
+			WARN("Kernel depth should not exceed depth: ", CommandLine.KernelDepth.value, " <= ", CommandLine.KernelDepth.value);
+			CommandLine.KernelDepth.value = CommandLine.Depth.value;
+		}
 
-	if( BaseDepth.value>FullDepth.value )
-	{
-		if( BaseDepth.set ) WARN( "Base depth must be smaller than full depth: " , BaseDepth.value , " <= " , FullDepth.value );
-		BaseDepth.value = FullDepth.value;
-	}
-	if( SolveDepth.value>Depth.value )
-	{
-		WARN( "Solution depth cannot exceed system depth: " , SolveDepth.value , " <= " , Depth.value );
-		SolveDepth.value = Depth.value;
-	}
-	if( !KernelDepth.set ) KernelDepth.value = Depth.value-2;
-	if( KernelDepth.value>Depth.value )
-	{
-		WARN( "Kernel depth should not exceed depth: " , KernelDepth.name , " <= " , KernelDepth.value );
-		KernelDepth.value = Depth.value;
-	}
-
-	if( !EnvelopeDepth.set ) EnvelopeDepth.value = BaseDepth.value;
-	if( EnvelopeDepth.value>Depth.value )
-	{
-		WARN( EnvelopeDepth.name , " can't be greater than " , Depth.name , ": " , EnvelopeDepth.value , " <= " , Depth.value );
-		EnvelopeDepth.value = Depth.value;
-	}
-	if( EnvelopeDepth.value<BaseDepth.value )
-	{
-		WARN( EnvelopeDepth.name , " can't be less than " , BaseDepth.name , ": " , EnvelopeDepth.value , " >= " , BaseDepth.value );
-		EnvelopeDepth.value = BaseDepth.value;
-	}
+		if (!CommandLine.EnvelopeDepth.set) CommandLine.EnvelopeDepth.value = CommandLine.BaseDepth.value;
+		if (CommandLine.EnvelopeDepth.value > CommandLine.Depth.value)
+		{
+			WARN(" can't be greater than ", CommandLine.Depth.value, ": ", CommandLine.EnvelopeDepth.value, " <= ", CommandLine.Depth.value);
+			CommandLine.EnvelopeDepth.value = CommandLine.Depth.value;
+		}
+		if (CommandLine.EnvelopeDepth.value < CommandLine.BaseDepth.value)
+		{
+			WARN(" can't be less than ", CommandLine.BaseDepth.value, ": ", CommandLine.EnvelopeDepth.value, " >= ", CommandLine.BaseDepth.value);
+			CommandLine.EnvelopeDepth.value = CommandLine.BaseDepth.value;
+		}
 
 #ifdef USE_DOUBLE
-	typedef double Real;
+		typedef double Real;
 #else // !USE_DOUBLE
-	typedef float  Real;
+		typedef float  Real;
 #endif // USE_DOUBLE
 
 #ifdef FAST_COMPILE
-	static const int Degree = Reconstructor::Poisson::DefaultFEMDegree;
-	static const BoundaryType BType = Reconstructor::Poisson::DefaultFEMBoundary;
-	static const unsigned int Dim = DEFAULT_DIMENSION;
-	static const unsigned int FEMSig = FEMDegreeAndBType< Degree , BType >::Signature;
-	WARN( "Compiled for degree-" , Degree , ", boundary-" , BoundaryNames[ BType ] , ", " , sizeof(Real)==4 ? "single" : "double" , "-precision _only_" );
-	if( !PointWeight.set ) PointWeight.value = Reconstructor::Poisson::WeightMultiplier*Degree;
-	char *ext = GetFileExtension( In.value );
-	if( !strcasecmp( ext , "ply" ) )
-	{
-		typedef VertexFactory::Factory< Real , typename VertexFactory::PositionFactory< Real , DEFAULT_DIMENSION > , typename VertexFactory::NormalFactory< Real , DEFAULT_DIMENSION > > Factory;
-		Factory factory;
-		bool *readFlags = new bool[ factory.plyReadNum() ];
-		std::vector< PlyProperty > unprocessedProperties;
-		PLY::ReadVertexHeader( In.value , factory , readFlags , unprocessedProperties );
-		if( !factory.plyValidReadProperties<0>( readFlags ) ) ERROR_OUT( "Ply file does not contain positions" );
-		if( !factory.plyValidReadProperties<1>( readFlags ) ) ERROR_OUT( "Ply file does not contain normals" );
-		delete[] readFlags;
+		static const int Degree = Reconstructor::Poisson::DefaultFEMDegree;
+		static const BoundaryType BType = Reconstructor::Poisson::DefaultFEMBoundary;
+		static const unsigned int Dim = DEFAULT_DIMENSION;
+		static const unsigned int FEMSig = FEMDegreeAndBType< Degree, BType >::Signature;
+		WARN("Compiled for degree-", Degree, ", boundary-", BoundaryNames[BType], ", ", sizeof(Real) == 4 ? "single" : "double", "-precision _only_");
+		if (!PointWeight.set) PointWeight.value = Reconstructor::Poisson::WeightMultiplier * Degree;
+		char* ext = GetFileExtension(In.value);
+		if (!strcasecmp(ext, "ply"))
+		{
+			typedef VertexFactory::Factory< Real, typename VertexFactory::PositionFactory< Real, DEFAULT_DIMENSION >, typename VertexFactory::NormalFactory< Real, DEFAULT_DIMENSION > > Factory;
+			Factory factory;
+			bool* readFlags = new bool[factory.plyReadNum()];
+			std::vector< PlyProperty > unprocessedProperties;
+			PLY::ReadVertexHeader(In.value, factory, readFlags, unprocessedProperties);
+			if (!factory.plyValidReadProperties<0>(readFlags)) ERROR_OUT("Ply file does not contain positions");
+			if (!factory.plyValidReadProperties<1>(readFlags)) ERROR_OUT("Ply file does not contain normals");
+			delete[] readFlags;
 
-		if( unprocessedProperties.size() ) Execute< Real , Dim , FEMSig >( VertexFactory::DynamicFactory< Real >( unprocessedProperties ) );
-		else                               Execute< Real , Dim , FEMSig >( VertexFactory::EmptyFactory< Real >() );
-	}
-	else
-	{
-		if( Colors.set ) Execute< Real , Dim , FEMSig >( VertexFactory::RGBColorFactory< Real >() );
-		else             Execute< Real , Dim , FEMSig >( VertexFactory::EmptyFactory< Real >() );
-	}
-	delete[] ext;
+			if (unprocessedProperties.size()) Execute< Real, Dim, FEMSig >(VertexFactory::DynamicFactory< Real >(unprocessedProperties));
+			else                               Execute< Real, Dim, FEMSig >(VertexFactory::EmptyFactory< Real >());
+		}
+		else
+		{
+			if (Colors.set) Execute< Real, Dim, FEMSig >(VertexFactory::RGBColorFactory< Real >());
+			else             Execute< Real, Dim, FEMSig >(VertexFactory::EmptyFactory< Real >());
+		}
+		delete[] ext;
 #else // !FAST_COMPILE
-	if( !PointWeight.set ) PointWeight.value = Reconstructor::Poisson::WeightMultiplier * Degree.value;
-	char *ext = GetFileExtension( In.value );
-	if( !strcasecmp( ext , "ply" ) )
-	{
-		typedef VertexFactory::Factory< Real , typename VertexFactory::PositionFactory< Real , DEFAULT_DIMENSION > , typename VertexFactory::NormalFactory< Real , DEFAULT_DIMENSION > > Factory;
-		Factory factory;
-		bool *readFlags = new bool[ factory.plyReadNum() ];
-		std::vector< PlyProperty > unprocessedProperties;
-		PLY::ReadVertexHeader( In.value , factory , readFlags , unprocessedProperties );
-		if( !factory.plyValidReadProperties<0>( readFlags ) ) ERROR_OUT( "Ply file does not contain positions" );
-		if( !factory.plyValidReadProperties<1>( readFlags ) ) ERROR_OUT( "Ply file does not contain normals" );
-		delete[] readFlags;
+		if (!CommandLine.PointWeight.set) CommandLine.PointWeight.value = Reconstructor::Poisson::WeightMultiplier * CommandLine.Degree.value;
+#if 0
+		char* ext = GetFileExtension(In.value);
+		if (!strcasecmp(ext, "ply"))
+		{
+			typedef VertexFactory::Factory< Real, typename VertexFactory::PositionFactory< Real, DEFAULT_DIMENSION >, typename VertexFactory::NormalFactory< Real, DEFAULT_DIMENSION > > Factory;
+			Factory factory;
+			bool* readFlags = new bool[factory.plyReadNum()];
+			std::vector< PlyProperty > unprocessedProperties;
+			PLY::ReadVertexHeader(In.value, factory, readFlags, unprocessedProperties);
+			if (!factory.plyValidReadProperties<0>(readFlags)) ERROR_OUT("Ply file does not contain positions");
+			if (!factory.plyValidReadProperties<1>(readFlags)) ERROR_OUT("Ply file does not contain normals");
+			delete[] readFlags;
 
-		if( unprocessedProperties.size() ) Execute< DEFAULT_DIMENSION , Real >( VertexFactory::DynamicFactory< Real >( unprocessedProperties ) );
-		else                               Execute< DEFAULT_DIMENSION , Real >( VertexFactory::EmptyFactory< Real >() );
-	}
-	else
-	{
-		if( Colors.set ) Execute< DEFAULT_DIMENSION , Real >( VertexFactory::RGBColorFactory< Real >() );
-		else             Execute< DEFAULT_DIMENSION , Real >( VertexFactory::EmptyFactory< Real >() );
-	}
-	delete[] ext;
+			if (unprocessedProperties.size()) Execute< DEFAULT_DIMENSION, Real >(VertexFactory::DynamicFactory< Real >(unprocessedProperties));
+			else                               Execute< DEFAULT_DIMENSION, Real >(VertexFactory::EmptyFactory< Real >());
+		}
+		else
+		{
+			if (Colors.set) Execute< DEFAULT_DIMENSION, Real >(VertexFactory::RGBColorFactory< Real >());
+			else             Execute< DEFAULT_DIMENSION, Real >(VertexFactory::EmptyFactory< Real >());
+		}
+		delete[] ext;
+#endif
+		
 #endif // FAST_COMPILE
-	if( Performance.set )
+		{
+			printf("Time (Wall/CPU): %.2f / %.2f\n", timer.wallTime(), timer.cpuTime());
+			printf("Peak Memory (MB): %d\n", MemoryInfo::PeakMemoryUsageMB());
+		}
+
+		ThreadPool::Terminate();
+		return EXIT_SUCCESS;
+	}
+#endif
+
+}; // PoisonWrapper
+
+bool PoissonRecon(const PoissonParams& params, const PoissonInputStream& input, PoissonOutputStream* output)
+{
+	PossionReconWrapper wrapper;
+	wrapper.CommandLine = params;
+	wrapper.InputStream = &input;
+	wrapper.OutputStream = output;
+
+	try
 	{
-		printf( "Time (Wall/CPU): %.2f / %.2f\n" , timer.wallTime() , timer.cpuTime() );
-		printf( "Peak Memory (MB): %d\n" , MemoryInfo::PeakMemoryUsageMB() );
+		wrapper.main();
+	}
+	catch (...)
+	{
+		return false;
 	}
 
-	ThreadPool::Terminate();
-	return EXIT_SUCCESS;
+	return true;
 }
+
+PoissonParams::PoissonParams()
+	: Degree(DEFAULT_FEM_DEGREE)
+	, Depth(8)
+	, KernelDepth(0)
+	, SolveDepth(0)
+	, Iters(8)
+	, FullDepth(5)
+	, BaseDepth(0)
+	, BaseVCycles(1)
+	, Normals(NORMALS_NONE)
+	, BType(DEFAULT_FEM_BOUNDARY + 1)
+	, MaxMemoryGB(0)
+	, ParallelType((int)ThreadPool::THREAD_POOL)
+	, ScheduleType((int)ThreadPool::DefaultSchedule)
+	, ThreadChunkSize((int)ThreadPool::DefaultChunkSize)
+	, Threads((int)std::thread::hardware_concurrency())
+	, DataX(32.f)
+	, SamplesPerNode(1.5f)
+	, Scale(1.1f)
+	, Width(0.f)
+	, Confidence(0.f)
+	, ConfidenceBias(0.f)
+	, CGSolverAccuracy(1e-3f)
+	, LowDepthCutOff(0.f)
+{}
